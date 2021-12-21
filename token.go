@@ -21,6 +21,7 @@ type TokenRefreshData struct {
 type Token struct {
 	Token       string
 	TokenSecret string
+	Realm       string // Realm id that this token belongs to
 	refreshData *TokenRefreshData
 }
 
