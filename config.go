@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -98,7 +99,8 @@ func (c *Config) RequestToken() (requestToken, requestSecret string, err error) 
 	}
 
 	// ParseQuery to decode URL-encoded application/x-www-form-urlencoded body
-	values, err := url.ParseQuery(string(body))
+	// TrimSpace is needed because some integrations append a newline to the body
+	values, err := url.ParseQuery(strings.TrimSpace(string(body)))
 	if err != nil {
 		return "", "", err
 	}
