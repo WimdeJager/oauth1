@@ -7,11 +7,18 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"strconv"
+	"time"
 )
 
 const (
 	oauthTokenSecretParam       = "oauth_token_secret"
 	oauthCallbackConfirmedParam = "oauth_callback_confirmed"
+
+	// Source: https://github.com/mrjones/oauth/blob/master/oauth.go
+	SessionHandleParam          = "oauth_session_handle"
+	ExpiresInParam              = "oauth_expires_in"
+	AuthorizationExpiresInParam = "oauth_authorization_expires_in"
 )
 
 // Config represents an OAuth1 consumer's (client's) key and secret, the
@@ -33,6 +40,8 @@ type Config struct {
 	Noncer Noncer
 	// HTTPClient overrides the choice of http.DefaultClient for RequestToken and AccessToken
 	HTTPClient *http.Client
+	// Call function with new token when the old token refreshes
+	OAuth10aTokenNotifyFunc *func(*Token)
 }
 
 // NewConfig returns a new Config with the given consumer key and secret.
@@ -52,7 +61,7 @@ func (c *Config) Client(ctx context.Context, t *Token) *http.Client {
 func NewClient(ctx context.Context, config *Config, token *Token) *http.Client {
 	transport := &Transport{
 		Base:   contextTransport(ctx),
-		source: StaticTokenSource(token),
+		source: StaticTokenSource(token, config),
 		auther: newAuther(config),
 	}
 	return &http.Client{Transport: transport}
@@ -143,41 +152,116 @@ func ParseAuthorizationCallback(req *http.Request) (requestToken, verifier strin
 // Endpoint AccessTokenURL. Returns the access token and secret (token
 // credentials).
 // See RFC 5849 2.3 Token Credentials.
-func (c *Config) AccessToken(requestToken, requestSecret, verifier string) (accessToken, accessSecret string, err error) {
+func (c *Config) AccessToken(requestToken, requestSecret, verifier string) (accessToken, accessSecret string, additionalData *TokenAdditionalData, err error) {
 	req, err := http.NewRequest("POST", c.Endpoint.AccessTokenURL, nil)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	err = newAuther(c).setAccessTokenAuthHeader(req, requestToken, requestSecret, verifier)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
+
+	return c.handleTokenRequest(req, false)
+}
+
+func (c *Config) RefreshToken(expiredToken Token) (refreshedToken *Token, err error) {
+	refreshTokenUrl := c.Endpoint.AccessTokenURL
+	if c.Endpoint.RefreshTokenUrl != "" {
+		refreshTokenUrl = c.Endpoint.RefreshTokenUrl
+	}
+
+	req, err := http.NewRequest("POST", refreshTokenUrl, nil)
+	if err != nil {
+		return nil, err
+	}
+	err = newAuther(c).setRefreshAccessTokenAuthHeader(req, expiredToken)
+	if err != nil {
+		return nil, err
+	}
+
+	accessToken, accessSecret, additionalData, err := c.handleTokenRequest(req, true)
+	if err != nil {
+		return nil, err
+	}
+
+	refreshedToken = &Token{
+		Token:          accessToken,
+		TokenSecret:    accessSecret,
+		AdditionalData: additionalData,
+	}
+
+	// Execute the refresh function, to let external applications know a new token is used
+	if c.OAuth10aTokenNotifyFunc != nil {
+		(*c.OAuth10aTokenNotifyFunc)(refreshedToken)
+	}
+
+	return refreshedToken, nil
+}
+
+func (c *Config) handleTokenRequest(req *http.Request, isRefresh bool) (accessToken, accessSecret string, additionalData *TokenAdditionalData, err error) {
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	// when err is nil, resp contains a non-nil resp.Body which must be closed
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return "", "", fmt.Errorf("oauth1: error reading Body: %v", err)
+		return "", "", nil, fmt.Errorf("oauth1: error reading Body: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return "", "", fmt.Errorf("oauth1: invalid status %d: %s", resp.StatusCode, body)
+		return "", "", nil, fmt.Errorf("oauth1: invalid status %d: %s", resp.StatusCode, body)
 	}
 
 	// ParseQuery to decode URL-encoded application/x-www-form-urlencoded body
 	values, err := url.ParseQuery(string(body))
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	accessToken = values.Get(oauthTokenParam)
 	accessSecret = values.Get(oauthTokenSecretParam)
 	if accessToken == "" || accessSecret == "" {
-		return "", "", errors.New("oauth1: Response missing oauth_token or oauth_token_secret")
+		return "", "", nil, errors.New("oauth1: Response missing oauth_token or oauth_token_secret")
 	}
-	return accessToken, accessSecret, nil
+	return accessToken, accessSecret, parseAdditionalTokenDataFromAccessTokenResponse(values), nil
+}
+
+// This function is added for the accounting software 'Xero'
+func parseAdditionalTokenDataFromAccessTokenResponse(responseValues url.Values) *TokenAdditionalData {
+	additionData := TokenAdditionalData{}
+
+	expiresInValue := responseValues.Get(ExpiresInParam)
+	if expiresInValue != "" {
+		expiresInSeconds, err := strconv.ParseInt(expiresInValue, 10, 64)
+
+		if err == nil {
+			expiresInTime := time.Now().UTC().Add(time.Second * time.Duration(expiresInSeconds))
+			additionData.ExpireTimestamp = &expiresInTime
+		}
+	}
+
+	authorizationExpiresInValue := responseValues.Get(AuthorizationExpiresInParam)
+	if authorizationExpiresInValue != "" {
+		authorizationExpiresInSeconds, err := strconv.ParseInt(authorizationExpiresInValue, 10, 64)
+
+		if err == nil {
+			authorizationExpiresInTime := time.Now().UTC().Add(time.Second * time.Duration(authorizationExpiresInSeconds))
+			additionData.AuthorizationExpireTimestamp = &authorizationExpiresInTime
+		}
+	}
+
+	sessionHandle := responseValues.Get(SessionHandleParam)
+	if sessionHandle != "" {
+		additionData.SessionHandle = sessionHandle
+	}
+
+	if additionData.SessionHandle == "" || additionData.ExpireTimestamp == nil || additionData.AuthorizationExpireTimestamp == nil {
+		return nil
+	}
+
+	return &additionData
 }
 
 func (c *Config) httpClient() *http.Client {
