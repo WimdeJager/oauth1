@@ -83,27 +83,12 @@ func (c *Config) RequestToken() (requestToken, requestSecret string, err error) 
 	if err != nil {
 		return "", "", err
 	}
-	resp, err := c.httpClient().Do(req)
+
+	values, err := c.handleTokenRequest(req)
 	if err != nil {
 		return "", "", err
 	}
-	// when err is nil, resp contains a non-nil resp.Body which must be closed
-	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", "", fmt.Errorf("oauth1: error reading Body: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return "", "", fmt.Errorf("oauth1: invalid status %d: %s", resp.StatusCode, body)
-	}
-
-	// ParseQuery to decode URL-encoded application/x-www-form-urlencoded body
-	// TrimSpace is needed because some integrations append a newline to the body
-	values, err := url.ParseQuery(strings.TrimSpace(string(body)))
-	if err != nil {
-		return "", "", err
-	}
 	requestToken = values.Get(oauthTokenParam)
 	requestSecret = values.Get(oauthTokenSecretParam)
 	if requestToken == "" || requestSecret == "" {
@@ -164,7 +149,23 @@ func (c *Config) AccessToken(requestToken, requestSecret, verifier string) (toke
 		return nil, err
 	}
 
-	return c.handleTokenRequest(req, false)
+	values, err := c.handleTokenRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	accessToken := values.Get(oauthTokenParam)
+	accessSecret := values.Get(oauthTokenSecretParam)
+	if accessToken == "" || accessSecret == "" {
+		return nil, errors.New("oauth1: Response missing oauth_token or oauth_token_secret")
+	}
+
+	return &Token{
+		Token:       accessToken,
+		TokenSecret: accessSecret,
+		refreshData: parseTokenRefreshDataFromAccessTokenResponse(values),
+		Realm:       c.Realm,
+	}, nil
 }
 
 func (c *Config) RefreshToken(expiredToken Token) (refreshedToken *Token, err error) {
@@ -182,9 +183,22 @@ func (c *Config) RefreshToken(expiredToken Token) (refreshedToken *Token, err er
 		return nil, err
 	}
 
-	refreshedToken, err = c.handleTokenRequest(req, true)
+	values, err := c.handleTokenRequest(req)
 	if err != nil {
 		return nil, err
+	}
+
+	accessToken := values.Get(oauthTokenParam)
+	accessSecret := values.Get(oauthTokenSecretParam)
+	if accessToken == "" || accessSecret == "" {
+		return nil, errors.New("oauth1: Response missing oauth_token or oauth_token_secret")
+	}
+
+	refreshedToken = &Token{
+		Token:       accessToken,
+		TokenSecret: accessSecret,
+		refreshData: parseTokenRefreshDataFromAccessTokenResponse(values),
+		Realm:       c.Realm,
 	}
 
 	// Execute the refresh function, to let external applications know a new token is used
@@ -195,7 +209,7 @@ func (c *Config) RefreshToken(expiredToken Token) (refreshedToken *Token, err er
 	return refreshedToken, nil
 }
 
-func (c *Config) handleTokenRequest(req *http.Request, isRefresh bool) (token *Token, err error) {
+func (c *Config) handleTokenRequest(req *http.Request) (values url.Values, err error) {
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return nil, err
@@ -212,21 +226,8 @@ func (c *Config) handleTokenRequest(req *http.Request, isRefresh bool) (token *T
 	}
 
 	// ParseQuery to decode URL-encoded application/x-www-form-urlencoded body
-	values, err := url.ParseQuery(string(body))
-	if err != nil {
-		return nil, err
-	}
-	accessToken := values.Get(oauthTokenParam)
-	accessSecret := values.Get(oauthTokenSecretParam)
-	if accessToken == "" || accessSecret == "" {
-		return nil, errors.New("oauth1: Response missing oauth_token or oauth_token_secret")
-	}
-	return &Token{
-		Token:       accessToken,
-		TokenSecret: accessSecret,
-		refreshData: parseTokenRefreshDataFromAccessTokenResponse(values),
-		Realm:       c.Realm,
-	}, nil
+	// TrimSpace is needed because some integrations append a newline to the body
+	return url.ParseQuery(strings.TrimSpace(string(body)))
 }
 
 // This function is added for the accounting software 'Xero'
