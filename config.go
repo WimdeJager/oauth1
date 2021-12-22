@@ -72,14 +72,15 @@ func NewClient(ctx context.Context, config *Config, token *Token) *http.Client {
 // POSTing a request (with oauth_callback in the auth header) to the Endpoint
 // RequestTokenURL. The response body form is validated to ensure
 // oauth_callback_confirmed is true. Returns the request token and secret
-// (temporary credentials).
+// (temporary credentials). The extraParams parameter can be used to add extra
+// parameters (in addition to the standard OAuth parameters) to the Auth header.
 // See RFC 5849 2.1 Temporary Credentials.
-func (c *Config) RequestToken() (requestToken, requestSecret string, err error) {
+func (c *Config) RequestToken(extraParams map[string]string) (requestToken, requestSecret string, err error) {
 	req, err := http.NewRequest("POST", c.Endpoint.RequestTokenURL, nil)
 	if err != nil {
 		return "", "", err
 	}
-	err = newAuther(c).setRequestTokenAuthHeader(req)
+	err = newAuther(c).setRequestTokenAuthHeader(req, extraParams)
 	if err != nil {
 		return "", "", err
 	}
@@ -137,14 +138,15 @@ func ParseAuthorizationCallback(req *http.Request) (requestToken, verifier strin
 // AccessToken obtains an access token (token credential) by POSTing a
 // request (with oauth_token and oauth_verifier in the auth header) to the
 // Endpoint AccessTokenURL. Returns the access token and secret (token
-// credentials).
+// credentials). The extraParams parameter can be used to add extra
+// parameters (in addition to the standard OAuth parameters) to the Auth header.
 // See RFC 5849 2.3 Token Credentials.
-func (c *Config) AccessToken(requestToken, requestSecret, verifier string) (token *Token, err error) {
+func (c *Config) AccessToken(requestToken, requestSecret, verifier string, extraParams map[string]string) (token *Token, err error) {
 	req, err := http.NewRequest("POST", c.Endpoint.AccessTokenURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	err = newAuther(c).setAccessTokenAuthHeader(req, requestToken, requestSecret, verifier)
+	err = newAuther(c).setAccessTokenAuthHeader(req, requestToken, requestSecret, verifier, extraParams)
 	if err != nil {
 		return nil, err
 	}

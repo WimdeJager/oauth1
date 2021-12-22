@@ -57,9 +57,13 @@ func newAuther(config *Config) *auther {
 
 // setRequestTokenAuthHeader adds the OAuth1 header for the request token
 // request (temporary credential) according to RFC 5849 2.1.
-func (a *auther) setRequestTokenAuthHeader(req *http.Request) error {
+// The extra parameter can be used to set extra parameters in the Authorization header, needed by the client
+func (a *auther) setRequestTokenAuthHeader(req *http.Request, extra map[string]string) error {
 	oauthParams := a.commonOAuthParams()
 	oauthParams[oauthCallbackParam] = a.config.CallbackURL
+	for key, param := range extra {
+		oauthParams[key] = param
+	}
 	params, err := collectParameters(req, oauthParams)
 	if err != nil {
 		return err
@@ -79,10 +83,14 @@ func (a *auther) setRequestTokenAuthHeader(req *http.Request) error {
 
 // setAccessTokenAuthHeader sets the OAuth1 header for the access token request
 // (token credential) according to RFC 5849 2.3.
-func (a *auther) setAccessTokenAuthHeader(req *http.Request, requestToken, requestSecret, verifier string) error {
+// The extra parameter can be used to set extra parameters in the Authorization header, needed by the client
+func (a *auther) setAccessTokenAuthHeader(req *http.Request, requestToken, requestSecret, verifier string, extra map[string]string) error {
 	oauthParams := a.commonOAuthParams()
 	oauthParams[oauthTokenParam] = requestToken
 	oauthParams[oauthVerifierParam] = verifier
+	for key, param := range extra {
+		oauthParams[key] = param
+	}
 	params, err := collectParameters(req, oauthParams)
 	if err != nil {
 		return err
